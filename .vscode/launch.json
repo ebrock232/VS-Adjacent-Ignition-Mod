@@ -1,0 +1,23 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Vintage Story Client",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build-mod",
+      "program": "dotnet",
+      "args": [
+        "${env:VINTAGE_STORY}/Vintagestory.dll",
+        "--tracelog",
+        "--addModPath",
+        "${workspaceFolder}/VS Adjacent Ignition Mod/VS Adjacent Ignition Mod/bin/Debug/Mods",
+        "--addOrigin",
+        "${workspaceFolder}/VS Adjacent Ignition Mod/VS Adjacent Ignition Mod/assets"
+      ],
+      "cwd": "${env:VINTAGE_STORY}",
+      "console": "internalConsole",
+      "stopAtEntry": false
+    }
+  ]
+}

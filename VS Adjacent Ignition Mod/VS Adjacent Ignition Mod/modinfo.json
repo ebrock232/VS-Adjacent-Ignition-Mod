@@ -1,0 +1,10 @@
+{
+    "$schema": "https://moddbcdn.vintagestory.at/schema/modinfo.latest.json",
+    "type": "code",
+    "modid": "adjacentignition",
+    "name": "Adjacent Ignition Mod",
+    "authors": [ "You" ],
+    "description": "Fire spreads between adjacent fire-based workstations (ovens, bloomeries, etc.) for bulk ignition.",
+    "version": "1.0.0",
+    "dependencies": { "game": "1.22.0" }
+}
