@@ -12,18 +12,18 @@ internal static class AdjacentIgnitionConfig
 
     internal static void Load(ICoreAPI api)
     {
-        LoadInternal(api, writeDefaults: true);
+        LoadInternal(api, writeIfMissing: true);
     }
 
     internal static string Reload(ICoreServerAPI api)
     {
-        string result = LoadInternal(api, writeDefaults: false);
+        string result = LoadInternal(api, writeIfMissing: false);
         WorkstationIgnitionHelper.PatchWorkstationBlockBehaviors(api);
         WorkstationIgnitionHelper.MigrateLoadedWorkstationBehaviors(api);
         return result;
     }
 
-    private static string LoadInternal(ICoreAPI api, bool writeDefaults)
+    private static string LoadInternal(ICoreAPI api, bool writeIfMissing)
     {
         if (api.Side != EnumAppSide.Server)
         {
@@ -33,10 +33,11 @@ internal static class AdjacentIgnitionConfig
         try
         {
             AdjacentIgnitionModConfig? loaded = api.LoadModConfig<AdjacentIgnitionModConfig>(AdjacentIgnitionModConfig.FileName);
+            bool isNewFile = loaded == null;
             Current = loaded ?? AdjacentIgnitionModConfig.CreateDefault();
             Current.Normalize();
 
-            if (writeDefaults)
+            if (writeIfMissing && isNewFile)
             {
                 api.StoreModConfig(Current, AdjacentIgnitionModConfig.FileName);
             }
@@ -45,7 +46,7 @@ internal static class AdjacentIgnitionConfig
 
             string modConfigDir = api.GetOrCreateDataPath("ModConfig");
             string path = $"{modConfigDir}\\{AdjacentIgnitionModConfig.FileName}";
-            api.Logger.Notification("[Adjacent Ignition Mod] Config loaded from {0}", path);
+            LogLoadedConfig(api, path);
             return path;
         }
         catch (Exception ex)
@@ -59,6 +60,29 @@ internal static class AdjacentIgnitionConfig
         }
     }
 
+    private static void LogLoadedConfig(ICoreAPI api, string path)
+    {
+        WorkstationToggles workstations = Current.Workstations;
+        api.Logger.Notification(
+            "[Adjacent Ignition Mod] Config loaded from {0}. " +
+            "Workstations [Firepit={1}, Oven={2}, PitKiln={3}, Bloomery={4}, Forge={5}, Boiler={6}]. " +
+            "AllowMixedWorkstationIgnition={7}, AllowTorchIgnition={8}, AllowDiagonalSpread={9}, " +
+            "MinIgnitionDelaySeconds={10}, MaxIgnitionDelaySeconds={11}, NeighborRescanIntervalSeconds={12}",
+            path,
+            workstations.Firepit,
+            workstations.Oven,
+            workstations.PitKiln,
+            workstations.Bloomery,
+            workstations.Forge,
+            workstations.Boiler,
+            Current.AllowMixedWorkstationIgnition,
+            Current.AllowTorchIgnition,
+            Current.AllowDiagonalSpread,
+            Current.MinIgnitionDelaySeconds,
+            Current.MaxIgnitionDelaySeconds,
+            Current.NeighborRescanIntervalSeconds);
+    }
+
     internal static bool IsWorkstationEnabled(Block? block)
     {
         if (block?.EntityClass == null)
@@ -70,6 +94,8 @@ internal static class AdjacentIgnitionConfig
     }
 
     internal static bool AllowMixedWorkstationIgnition => Current.AllowMixedWorkstationIgnition;
+
+    internal static bool AllowTorchIgnition => Current.AllowTorchIgnition;
 
     internal static bool AllowDiagonalSpread => Current.AllowDiagonalSpread;
 

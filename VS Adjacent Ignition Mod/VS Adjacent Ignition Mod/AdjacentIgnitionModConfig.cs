@@ -10,6 +10,8 @@ public class AdjacentIgnitionModConfig
 
     public bool AllowMixedWorkstationIgnition { get; set; }
 
+    public bool AllowTorchIgnition { get; set; }
+
     public float MinIgnitionDelaySeconds { get; set; } = 5f;
     public float MaxIgnitionDelaySeconds { get; set; } = 8f;
 

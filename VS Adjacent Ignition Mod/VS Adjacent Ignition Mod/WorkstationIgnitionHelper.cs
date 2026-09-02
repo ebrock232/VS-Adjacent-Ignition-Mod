@@ -90,6 +90,89 @@ internal static class WorkstationIgnitionHelper
         return offset.Y == 0 && Math.Abs(offset.X) == 1 && Math.Abs(offset.Z) == 1;
     }
 
+    public static bool IsTorchHeatSource(Block? block)
+    {
+        if (block == null)
+        {
+            return false;
+        }
+
+        if (block is BlockTorchHolder holder)
+        {
+            return !holder.Empty;
+        }
+
+        if (block is BlockTorch torch)
+        {
+            return !torch.IsExtinct;
+        }
+
+        string? path = block.Code?.Path;
+        if (path == null)
+        {
+            return false;
+        }
+
+        if (path.StartsWith("torchholder-", StringComparison.OrdinalIgnoreCase)
+            && path.Contains("-filled-", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return path.StartsWith("torch-", StringComparison.OrdinalIgnoreCase)
+            && path.Contains("-lit-", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static bool CanTorchHeatWorkstation(Vec3i offset)
+    {
+        if (IsFaceAdjacent(offset))
+        {
+            return true;
+        }
+
+        return AdjacentIgnitionConfig.AllowDiagonalSpread && IsHorizontalDiagonal(offset);
+    }
+
+    public static bool IsChunkLoadedAt(IWorldAccessor world, BlockPos pos)
+    {
+        return world.BlockAccessor.GetChunkAtBlockPos(pos) != null;
+    }
+
+    public static bool HasAdjacentTorchHeatSource(IWorldAccessor world, BlockPos workstationPos)
+    {
+        if (!AdjacentIgnitionConfig.AllowTorchIgnition)
+        {
+            return false;
+        }
+
+        if (!IsChunkLoadedAt(world, workstationPos))
+        {
+            return false;
+        }
+
+        foreach (Vec3i offset in SpreadCandidateOffsets)
+        {
+            if (!CanTorchHeatWorkstation(offset))
+            {
+                continue;
+            }
+
+            BlockPos torchPos = workstationPos.AddCopy(offset.X, offset.Y, offset.Z);
+            if (!IsChunkLoadedAt(world, torchPos))
+            {
+                continue;
+            }
+
+            Block block = world.BlockAccessor.GetBlock(torchPos);
+            if (IsTorchHeatSource(block))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     public static bool IsKnownWorkstation(Block? block)
     {
         return block?.EntityClass != null && KnownWorkstationEntityClasses.Contains(block.EntityClass);
@@ -250,6 +333,32 @@ internal static class WorkstationIgnitionHelper
             return false;
         }
 
+        return CanIgniteBlockEntity(world, be);
+    }
+
+    public static bool CanIgniteFromTorchHeat(IWorldAccessor world, BlockPos pos)
+    {
+        BlockEntity? be = GetWorkstationBlockEntity(world, pos);
+        if (be == null || !IsTargetWorkstation(be.Block))
+        {
+            return false;
+        }
+
+        if (IsLit(world, be.Pos))
+        {
+            return false;
+        }
+
+        if (be is BlockEntityPitKiln pitKiln)
+        {
+            return CanPitKilnIgniteFromTorchHeat(world, pitKiln);
+        }
+
+        return CanIgniteBlockEntity(world, be);
+    }
+
+    private static bool CanIgniteBlockEntity(IWorldAccessor world, BlockEntity be)
+    {
         return be switch
         {
             BlockEntityFirepit firepit => firepit.GetIgnitableState(0) != EnumIgniteState.NotIgnitablePreventDefault,
@@ -260,6 +369,85 @@ internal static class WorkstationIgnitionHelper
             BlockEntityBoiler boiler => CanBoilerIgnite(boiler),
             _ => false
         };
+    }
+
+    private static bool CanPitKilnIgniteFromTorchHeat(IWorldAccessor world, BlockEntityPitKiln pitKiln)
+    {
+        if (!pitKiln.IsComplete || pitKiln.Lit)
+        {
+            return false;
+        }
+
+        if (pitKiln.GetBehavior<BEBehaviorBurning>()?.IsBurning == true)
+        {
+            return false;
+        }
+
+        return IsValidPitKilnForTorchHeat(world, pitKiln.Pos);
+    }
+
+    private static bool IsValidPitKilnForTorchHeat(IWorldAccessor world, BlockPos pos)
+    {
+        if (!IsChunkLoadedAt(world, pos))
+        {
+            return false;
+        }
+
+        IBlockAccessor blockAccessor = world.BlockAccessor;
+        Block pitKilnBlock = blockAccessor.GetBlock(pos);
+
+        if (blockAccessor.GetBlock(pos, BlockLayersAccess.Fluid).BlockId != 0)
+        {
+            return false;
+        }
+
+        BlockPos upPos = pos.UpCopy();
+        if (IsChunkLoadedAt(world, upPos) && IsTorchHeatSource(blockAccessor.GetBlock(upPos)))
+        {
+            return true;
+        }
+
+        BlockFacing[] horizontalFaces = BlockFacing.HORIZONTALS;
+        for (int i = 0; i < horizontalFaces.Length; i++)
+        {
+            BlockFacing face = horizontalFaces[i];
+            BlockPos neighborPos = pos.AddCopy(face);
+            if (!IsChunkLoadedAt(world, neighborPos))
+            {
+                return false;
+            }
+
+            Block neighborBlock = blockAccessor.GetBlock(neighborPos);
+            if (!neighborBlock.CanAttachBlockAt(blockAccessor, pitKilnBlock, neighborPos, face.Opposite))
+            {
+                return false;
+            }
+
+            if (neighborBlock.GetCombustibleProperties(world, null, neighborPos) != null)
+            {
+                return false;
+            }
+        }
+
+        BlockPos downPos = pos.DownCopy();
+        if (!IsChunkLoadedAt(world, downPos))
+        {
+            return false;
+        }
+
+        Block downBlock = blockAccessor.GetBlock(downPos);
+        if (!downBlock.CanAttachBlockAt(blockAccessor, pitKilnBlock, downPos, BlockFacing.UP))
+        {
+            return false;
+        }
+
+        if (downBlock.GetCombustibleProperties(world, null, downPos) != null)
+        {
+            return false;
+        }
+
+        Block upBlock = blockAccessor.GetBlock(upPos);
+        return upBlock.Replaceable >= 6000;
     }
 
     private static bool CanBoilerIgnite(BlockEntityBoiler boiler)
@@ -275,44 +463,67 @@ internal static class WorkstationIgnitionHelper
             return false;
         }
 
-        switch (be)
+        return TryIgniteBlockEntity(world, be);
+    }
+
+    public static bool TryIgniteFromTorchHeat(IWorldAccessor world, BlockPos pos)
+    {
+        BlockEntity? be = GetWorkstationBlockEntity(world, pos);
+        if (be == null || !CanIgniteFromTorchHeat(world, be.Pos))
         {
-            case BlockEntityFirepit firepit:
-                if (firepit.fuelSlot.Empty)
-                {
-                    return false;
-                }
-
-                firepit.canIgniteFuel = true;
-                firepit.extinguishedTotalHours = world.Calendar.TotalHours;
-                firepit.igniteFuel();
-                return true;
-
-            case BlockEntityOven oven:
-                return oven.TryIgnite();
-
-            case BlockEntityBloomery bloomery:
-                return bloomery.TryIgnite();
-
-            case BlockEntityPitKiln pitKiln:
-                pitKiln.TryIgnite(null);
-                return true;
-
-            case BlockEntityForge forge:
-                forge.TryIgnite();
-                return true;
-
-            case BlockEntityBoiler boiler:
-                if (!CanBoilerIgnite(boiler))
-                {
-                    return false;
-                }
-
-                boiler.TryIgnite();
-                return boiler.IsBurning;
-
-            default:
-                return false;
+            return false;
         }
+
+        return TryIgniteBlockEntity(world, be);
+    }
+
+    private static bool TryIgniteBlockEntity(IWorldAccessor world, BlockEntity be)
+    {
+        return be switch
+        {
+            BlockEntityFirepit firepit => TryIgniteFirepit(world, firepit),
+            BlockEntityOven oven => oven.TryIgnite(),
+            BlockEntityBloomery bloomery => bloomery.TryIgnite(),
+            BlockEntityPitKiln pitKiln => TryIgnitePitKiln(pitKiln),
+            BlockEntityForge forge => TryIgniteForge(forge),
+            BlockEntityBoiler boiler => TryIgniteBoiler(boiler),
+            _ => false
+        };
+    }
+
+    private static bool TryIgniteFirepit(IWorldAccessor world, BlockEntityFirepit firepit)
+    {
+        if (firepit.fuelSlot.Empty)
+        {
+            return false;
+        }
+
+        firepit.canIgniteFuel = true;
+        firepit.extinguishedTotalHours = world.Calendar.TotalHours;
+        firepit.igniteFuel();
+        return true;
+    }
+
+    private static bool TryIgnitePitKiln(BlockEntityPitKiln pitKiln)
+    {
+        pitKiln.TryIgnite(null);
+        return true;
+    }
+
+    private static bool TryIgniteForge(BlockEntityForge forge)
+    {
+        forge.TryIgnite();
+        return true;
+    }
+
+    private static bool TryIgniteBoiler(BlockEntityBoiler boiler)
+    {
+        if (!CanBoilerIgnite(boiler))
+        {
+            return false;
+        }
+
+        boiler.TryIgnite();
+        return boiler.IsBurning;
     }
 }

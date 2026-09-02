@@ -33,7 +33,8 @@ public class VS_Adjacent_Ignition_ModModSystem : ModSystem
                 .HandleWith(args =>
                 {
                     string result = AdjacentIgnitionConfig.Reload(api);
-                    return TextCommandResult.Success($"Adjacent Ignition config reloaded from {result}");
+                    return TextCommandResult.Success(
+                        $"Adjacent Ignition config reloaded from {result}.");
                 })
             .EndSub();
     }

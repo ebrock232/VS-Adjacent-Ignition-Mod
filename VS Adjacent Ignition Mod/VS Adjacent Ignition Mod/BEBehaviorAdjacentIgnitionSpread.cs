@@ -29,7 +29,11 @@ public class BEBehaviorAdjacentIgnitionSpread : BlockEntityBehavior
     private long? tickListenerId;
     private bool wasLit;
     private bool isActivelySpreading;
+    private bool isWarmingFromTorch;
+    private float torchWarmingProgress;
+    private float torchWarmingRequired;
     private float rescanTimer;
+    private bool pendingInitialScan;
 
     public BEBehaviorAdjacentIgnitionSpread(BlockEntity blockEntity) : base(blockEntity)
     {
@@ -46,14 +50,10 @@ public class BEBehaviorAdjacentIgnitionSpread : BlockEntityBehavior
 
         wasLit = WorkstationIgnitionHelper.IsLit(api.World, Pos);
         isActivelySpreading = wasLit;
+        pendingInitialScan = true;
         tickListenerId = Api.Event.RegisterGameTickListener(
             OnTick,
-            (int)(GetTickIntervalMs(isActivelySpreading)));
-
-        if (wasLit)
-        {
-            ScanForIgnitableNeighbors();
-        }
+            GetTickIntervalMs(isActivelySpreading || isWarmingFromTorch));
     }
 
     public void NotifyLitStateChanged()
@@ -66,6 +66,7 @@ public class BEBehaviorAdjacentIgnitionSpread : BlockEntityBehavior
         bool isLit = WorkstationIgnitionHelper.IsLit(Api.World, Pos);
         if (isLit && !isActivelySpreading)
         {
+            EndTorchWarming();
             BeginActiveSpreading();
         }
     }
@@ -79,11 +80,15 @@ public class BEBehaviorAdjacentIgnitionSpread : BlockEntityBehavior
 
         warmingNeighbors.Clear();
         rescanTimer = 0f;
+        EndTorchWarming();
         wasLit = WorkstationIgnitionHelper.IsLit(Api.World, Pos);
+        pendingInitialScan = true;
 
         if (wasLit)
         {
-            BeginActiveSpreading();
+            isActivelySpreading = true;
+            rescanTimer = 0f;
+            RestartTickListener();
         }
         else
         {
@@ -111,32 +116,82 @@ public class BEBehaviorAdjacentIgnitionSpread : BlockEntityBehavior
             return;
         }
 
+        if (pendingInitialScan)
+        {
+            RunPendingInitialScan();
+        }
+
         bool isLit = WorkstationIgnitionHelper.IsLit(Api.World, Pos);
 
-        if (!isLit)
+        if (isLit)
         {
-            if (wasLit || isActivelySpreading)
+            if (isWarmingFromTorch)
             {
-                EndActiveSpreading();
+                EndTorchWarming();
             }
 
-            wasLit = false;
+            if (!wasLit)
+            {
+                wasLit = true;
+                BeginActiveSpreading();
+            }
+
+            UpdateWarmingNeighbors(dt);
+
+            rescanTimer += dt;
+            if (rescanTimer >= AdjacentIgnitionConfig.NeighborRescanIntervalSeconds)
+            {
+                rescanTimer = 0f;
+                ScanForIgnitableNeighbors();
+            }
+
             return;
         }
 
-        if (!wasLit)
+        if (wasLit || isActivelySpreading)
         {
-            wasLit = true;
-            BeginActiveSpreading();
+            EndActiveSpreading();
         }
 
-        UpdateWarmingNeighbors(dt);
+        wasLit = false;
+
+        if (!AdjacentIgnitionConfig.AllowTorchIgnition)
+        {
+            if (isWarmingFromTorch)
+            {
+                EndTorchWarming();
+            }
+
+            return;
+        }
+
+        if (isWarmingFromTorch)
+        {
+            UpdateTorchWarming(dt);
+            return;
+        }
 
         rescanTimer += dt;
         if (rescanTimer >= AdjacentIgnitionConfig.NeighborRescanIntervalSeconds)
         {
             rescanTimer = 0f;
+            TryBeginTorchWarming();
+        }
+    }
+
+    private void RunPendingInitialScan()
+    {
+        pendingInitialScan = false;
+
+        if (WorkstationIgnitionHelper.IsLit(Api.World, Pos))
+        {
             ScanForIgnitableNeighbors();
+            return;
+        }
+
+        if (AdjacentIgnitionConfig.AllowTorchIgnition)
+        {
+            TryBeginTorchWarming();
         }
     }
 
@@ -156,9 +211,74 @@ public class BEBehaviorAdjacentIgnitionSpread : BlockEntityBehavior
 
     private void EndActiveSpreading()
     {
+        if (!isActivelySpreading)
+        {
+            return;
+        }
+
         isActivelySpreading = false;
         warmingNeighbors.Clear();
         rescanTimer = 0f;
+        RestartTickListener();
+    }
+
+    private void TryBeginTorchWarming()
+    {
+        if (!WorkstationIgnitionHelper.CanIgniteFromTorchHeat(Api.World, Pos))
+        {
+            return;
+        }
+
+        if (!WorkstationIgnitionHelper.HasAdjacentTorchHeatSource(Api.World, Pos))
+        {
+            return;
+        }
+
+        isWarmingFromTorch = true;
+        torchWarmingProgress = 0f;
+        torchWarmingRequired = RollIgnitionDelaySeconds();
+        RestartTickListener();
+    }
+
+    private void UpdateTorchWarming(float dt)
+    {
+        if (!WorkstationIgnitionHelper.HasAdjacentTorchHeatSource(Api.World, Pos))
+        {
+            EndTorchWarming();
+            return;
+        }
+
+        torchWarmingProgress += dt;
+        float intensity = torchWarmingRequired <= 0f
+            ? 0f
+            : GameMath.Clamp(torchWarmingProgress / torchWarmingRequired, 0f, 1f);
+        AdjacentIgnitionParticles.SpawnWarming(Api.World, Pos, intensity);
+
+        if (torchWarmingProgress < torchWarmingRequired)
+        {
+            return;
+        }
+
+        if (WorkstationIgnitionHelper.TryIgniteFromTorchHeat(Api.World, Pos))
+        {
+            NotifyLitStateChanged();
+        }
+        else
+        {
+            torchWarmingProgress = 0f;
+        }
+    }
+
+    private void EndTorchWarming()
+    {
+        if (!isWarmingFromTorch)
+        {
+            return;
+        }
+
+        isWarmingFromTorch = false;
+        torchWarmingProgress = 0f;
+        torchWarmingRequired = 0f;
         RestartTickListener();
     }
 
@@ -172,12 +292,12 @@ public class BEBehaviorAdjacentIgnitionSpread : BlockEntityBehavior
         Api.Event.UnregisterGameTickListener(tickListenerId.Value);
         tickListenerId = Api.Event.RegisterGameTickListener(
             OnTick,
-            (int)(GetTickIntervalMs(isActivelySpreading)));
+            GetTickIntervalMs(isActivelySpreading || isWarmingFromTorch));
     }
 
-    private static int GetTickIntervalMs(bool activelySpreading)
+    private static int GetTickIntervalMs(bool useActiveInterval)
     {
-        float interval = activelySpreading ? ActiveTickIntervalSeconds : IdleTickIntervalSeconds;
+        float interval = useActiveInterval ? ActiveTickIntervalSeconds : IdleTickIntervalSeconds;
         return (int)(interval * 1000);
     }
 
@@ -191,7 +311,11 @@ public class BEBehaviorAdjacentIgnitionSpread : BlockEntityBehavior
 
         warmingNeighbors.Clear();
         isActivelySpreading = false;
+        isWarmingFromTorch = false;
+        torchWarmingProgress = 0f;
+        torchWarmingRequired = 0f;
         rescanTimer = 0f;
+        pendingInitialScan = false;
     }
 
     private float RollIgnitionDelaySeconds()
@@ -209,6 +333,18 @@ public class BEBehaviorAdjacentIgnitionSpread : BlockEntityBehavior
         foreach (Vec3i offset in WorkstationIgnitionHelper.SpreadCandidateOffsets)
         {
             BlockPos neighborPos = Pos.AddCopy(offset.X, offset.Y, offset.Z);
+            if (!WorkstationIgnitionHelper.IsChunkLoadedAt(Api.World, neighborPos))
+            {
+                continue;
+            }
+
+            Block neighborBlock = Api.World.BlockAccessor.GetBlock(neighborPos);
+            if (WorkstationIgnitionHelper.IsTorchHeatSource(neighborBlock))
+            {
+                warmingNeighbors.Remove(neighborPos);
+                continue;
+            }
+
             BlockEntity? neighborBe = WorkstationIgnitionHelper.GetWorkstationBlockEntity(Api.World, neighborPos);
             if (neighborBe == null)
             {
@@ -217,14 +353,14 @@ public class BEBehaviorAdjacentIgnitionSpread : BlockEntityBehavior
             }
 
             BlockPos spreadPos = neighborBe.Pos;
-            Block neighborBlock = neighborBe.Block;
+            Block workstationBlock = neighborBe.Block;
 
-            if (!WorkstationIgnitionHelper.IsTargetWorkstation(neighborBlock))
+            if (!WorkstationIgnitionHelper.IsTargetWorkstation(workstationBlock))
             {
                 continue;
             }
 
-            if (!WorkstationIgnitionHelper.CanSpreadHeat(sourceBlock, neighborBlock, spreadPos, Pos))
+            if (!WorkstationIgnitionHelper.CanSpreadHeat(sourceBlock, workstationBlock, spreadPos, Pos))
             {
                 warmingNeighbors.Remove(spreadPos);
                 continue;
